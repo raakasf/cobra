@@ -1414,16 +1414,16 @@ func TestPersistentHooks(t *testing.T) {
 		name string
 		got  string
 	}{
-		// TODO: currently PersistenPreRun* defined in parent does not
-		// run if the matchin child subcommand has PersistenPreRun.
+		// TODO: currently PersistentPreRun* defined in parent does not
+		// run if the matching child subcommand has PersistentPreRun.
 		// If the behavior changes (https://github.com/spf13/cobra/issues/252)
 		// this test must be fixed.
 		{"parentPersPreArgs", parentPersPreArgs},
 		{"parentPreArgs", parentPreArgs},
 		{"parentRunArgs", parentRunArgs},
 		{"parentPostArgs", parentPostArgs},
-		// TODO: currently PersistenPostRun* defined in parent does not
-		// run if the matchin child subcommand has PersistenPostRun.
+		// TODO: currently PersistentPostRun* defined in parent does not
+		// run if the matching child subcommand has PersistentPostRun.
 		// If the behavior changes (https://github.com/spf13/cobra/issues/252)
 		// this test must be fixed.
 		{"parentPersPostArgs", parentPersPostArgs},
@@ -1720,6 +1720,38 @@ func TestFlagErrorFunc(t *testing.T) {
 	expected := fmt.Sprintf(expectedFmt, "unknown flag: --unknown-flag")
 	if got != expected {
 		t.Errorf("Expected %v, got %v", expected, got)
+	}
+}
+
+func TestFlagErrorFuncHelp(t *testing.T) {
+	c := &Command{Use: "c", Run: emptyRun}
+	c.PersistentFlags().Bool("help", false, "help for c")
+	c.SetFlagErrorFunc(func(_ *Command, err error) error {
+		return fmt.Errorf("wrap error: %w", err)
+	})
+
+	out, err := executeCommand(c, "--help")
+	if err != nil {
+		t.Errorf("--help should not fail: %v", err)
+	}
+
+	expected := `Usage:
+  c [flags]
+
+Flags:
+      --help   help for c
+`
+	if out != expected {
+		t.Errorf("Expected: %v, got: %v", expected, out)
+	}
+
+	out, err = executeCommand(c, "-h")
+	if err != nil {
+		t.Errorf("-h should not fail: %v", err)
+	}
+
+	if out != expected {
+		t.Errorf("Expected: %v, got: %v", expected, out)
 	}
 }
 
@@ -2057,4 +2089,107 @@ func TestFParseErrWhitelistSiblingCommand(t *testing.T) {
 		t.Error("expected unknown flag error")
 	}
 	checkStringContains(t, output, "unknown flag: --unknown")
+}
+
+func TestSetContext(t *testing.T) {
+	type key struct{}
+	val := "foobar"
+	root := &Command{
+		Use: "root",
+		Run: func(cmd *Command, args []string) {
+			key := cmd.Context().Value(key{})
+			got, ok := key.(string)
+			if !ok {
+				t.Error("key not found in context")
+			}
+			if got != val {
+				t.Errorf("Expected value: \n %v\nGot:\n %v\n", val, got)
+			}
+		},
+	}
+
+	ctx := context.WithValue(context.Background(), key{}, val)
+	root.SetContext(ctx)
+	err := root.Execute()
+	if err != nil {
+		t.Error(err)
+	}
+}
+
+func TestSetContextPreRun(t *testing.T) {
+	type key struct{}
+	val := "barr"
+	root := &Command{
+		Use: "root",
+		PreRun: func(cmd *Command, args []string) {
+			ctx := context.WithValue(cmd.Context(), key{}, val)
+			cmd.SetContext(ctx)
+		},
+		Run: func(cmd *Command, args []string) {
+			val := cmd.Context().Value(key{})
+			got, ok := val.(string)
+			if !ok {
+				t.Error("key not found in context")
+			}
+			if got != val {
+				t.Errorf("Expected value: \n %v\nGot:\n %v\n", val, got)
+			}
+		},
+	}
+	err := root.Execute()
+	if err != nil {
+		t.Error(err)
+	}
+}
+
+func TestSetContextPreRunOverwrite(t *testing.T) {
+	type key struct{}
+	val := "blah"
+	root := &Command{
+		Use: "root",
+		Run: func(cmd *Command, args []string) {
+			key := cmd.Context().Value(key{})
+			_, ok := key.(string)
+			if ok {
+				t.Error("key found in context when not expected")
+			}
+		},
+	}
+	ctx := context.WithValue(context.Background(), key{}, val)
+	root.SetContext(ctx)
+	err := root.ExecuteContext(context.Background())
+	if err != nil {
+		t.Error(err)
+	}
+}
+
+func TestSetContextPersistentPreRun(t *testing.T) {
+	type key struct{}
+	val := "barbar"
+	root := &Command{
+		Use: "root",
+		PersistentPreRun: func(cmd *Command, args []string) {
+			ctx := context.WithValue(cmd.Context(), key{}, val)
+			cmd.SetContext(ctx)
+		},
+	}
+	child := &Command{
+		Use: "child",
+		Run: func(cmd *Command, args []string) {
+			key := cmd.Context().Value(key{})
+			got, ok := key.(string)
+			if !ok {
+				t.Error("key not found in context")
+			}
+			if got != val {
+				t.Errorf("Expected value: \n %v\nGot:\n %v\n", val, got)
+			}
+		},
+	}
+	root.AddCommand(child)
+	root.SetArgs([]string{"child"})
+	err := root.Execute()
+	if err != nil {
+		t.Error(err)
+	}
 }

@@ -125,7 +125,7 @@ func TestCmdNameCompletionInGo(t *testing.T) {
 
 	expected = strings.Join([]string{
 		"aliased\tA command with aliases",
-		"completion\tgenerate the autocompletion script for the specified shell",
+		"completion\tGenerate the autocompletion script for the specified shell",
 		"firstChild\tFirst command",
 		"help\tHelp about any command",
 		"secondChild",
@@ -580,7 +580,7 @@ func TestFlagNameCompletionInGoWithDesc(t *testing.T) {
 
 	expected := strings.Join([]string{
 		"childCmd\tfirst command",
-		"completion\tgenerate the autocompletion script for the specified shell",
+		"completion\tGenerate the autocompletion script for the specified shell",
 		"help\tHelp about any command",
 		":4",
 		"Completion ended with directive: ShellCompDirectiveNoFileComp", ""}, "\n")
@@ -2398,6 +2398,21 @@ func TestDefaultCompletionCmd(t *testing.T) {
 	rootCmd.CompletionOptions.DisableDescriptions = false
 	// Remove completion command for the next test
 	removeCompCmd(rootCmd)
+
+	// Test that the 'completion' command can be hidden
+	rootCmd.CompletionOptions.HiddenDefaultCmd = true
+	assertNoErr(t, rootCmd.Execute())
+	compCmd, _, err = rootCmd.Find([]string{compCmdName})
+	if err != nil {
+		t.Errorf("Unexpected error: %v", err)
+	}
+	if compCmd.Hidden == false {
+		t.Error("Default 'completion' command should be hidden but it is not")
+	}
+	// Re-enable for next test
+	rootCmd.CompletionOptions.HiddenDefaultCmd = false
+	// Remove completion command for the next test
+	removeCompCmd(rootCmd)
 }
 
 func TestCompleteCompletion(t *testing.T) {
@@ -2541,5 +2556,324 @@ func TestMultipleShorthandFlagCompletion(t *testing.T) {
 
 	if output != expected {
 		t.Errorf("expected: %q, got: %q", expected, output)
+	}
+}
+
+func TestCompleteWithDisableFlagParsing(t *testing.T) {
+
+	flagValidArgs := func(cmd *Command, args []string, toComplete string) ([]string, ShellCompDirective) {
+		return []string{"--flag", "-f"}, ShellCompDirectiveNoFileComp
+	}
+
+	rootCmd := &Command{Use: "root", Args: NoArgs, Run: emptyRun}
+	childCmd := &Command{
+		Use:                "child",
+		Run:                emptyRun,
+		DisableFlagParsing: true,
+		ValidArgsFunction:  flagValidArgs,
+	}
+	rootCmd.AddCommand(childCmd)
+
+	rootCmd.PersistentFlags().StringP("persistent", "p", "", "persistent flag")
+	childCmd.Flags().StringP("nonPersistent", "n", "", "non-persistent flag")
+
+	// Test that when DisableFlagParsing==true, ValidArgsFunction is called to complete flag names,
+	// after Cobra tried to complete the flags it knows about.
+	childCmd.DisableFlagParsing = true
+	output, err := executeCommand(rootCmd, ShellCompNoDescRequestCmd, "child", "-")
+	if err != nil {
+		t.Errorf("Unexpected error: %v", err)
+	}
+
+	expected := strings.Join([]string{
+		"--persistent",
+		"-p",
+		"--nonPersistent",
+		"-n",
+		"--flag",
+		"-f",
+		":4",
+		"Completion ended with directive: ShellCompDirectiveNoFileComp", ""}, "\n")
+
+	if output != expected {
+		t.Errorf("expected: %q, got: %q", expected, output)
+	}
+
+	// Test that when DisableFlagParsing==false, Cobra completes the flags itself and ValidArgsFunction is not called
+	childCmd.DisableFlagParsing = false
+	output, err = executeCommand(rootCmd, ShellCompNoDescRequestCmd, "child", "-")
+	if err != nil {
+		t.Errorf("Unexpected error: %v", err)
+	}
+
+	// Cobra was not told of any flags, so it returns nothing
+	expected = strings.Join([]string{
+		"--persistent",
+		"-p",
+		"--nonPersistent",
+		"-n",
+		":4",
+		"Completion ended with directive: ShellCompDirectiveNoFileComp", ""}, "\n")
+
+	if output != expected {
+		t.Errorf("expected: %q, got: %q", expected, output)
+	}
+}
+
+func TestCompleteWithRootAndLegacyArgs(t *testing.T) {
+	// Test a lonely root command which uses legacyArgs().  In such a case, the root
+	// command should accept any number of arguments and completion should behave accordingly.
+	rootCmd := &Command{
+		Use:  "root",
+		Args: nil, // Args must be nil to trigger the legacyArgs() function
+		Run:  emptyRun,
+		ValidArgsFunction: func(cmd *Command, args []string, toComplete string) ([]string, ShellCompDirective) {
+			return []string{"arg1", "arg2"}, ShellCompDirectiveNoFileComp
+		},
+	}
+
+	// Make sure the first arg is completed
+	output, err := executeCommand(rootCmd, ShellCompNoDescRequestCmd, "")
+	if err != nil {
+		t.Errorf("Unexpected error: %v", err)
+	}
+
+	expected := strings.Join([]string{
+		"arg1",
+		"arg2",
+		":4",
+		"Completion ended with directive: ShellCompDirectiveNoFileComp", ""}, "\n")
+
+	if output != expected {
+		t.Errorf("expected: %q, got: %q", expected, output)
+	}
+
+	// Make sure the completion of arguments continues
+	output, err = executeCommand(rootCmd, ShellCompNoDescRequestCmd, "arg1", "")
+	if err != nil {
+		t.Errorf("Unexpected error: %v", err)
+	}
+
+	expected = strings.Join([]string{
+		"arg1",
+		"arg2",
+		":4",
+		"Completion ended with directive: ShellCompDirectiveNoFileComp", ""}, "\n")
+
+	if output != expected {
+		t.Errorf("expected: %q, got: %q", expected, output)
+	}
+}
+
+func TestFixedCompletions(t *testing.T) {
+	rootCmd := &Command{Use: "root", Args: NoArgs, Run: emptyRun}
+	choices := []string{"apple", "banana", "orange"}
+	childCmd := &Command{
+		Use:               "child",
+		ValidArgsFunction: FixedCompletions(choices, ShellCompDirectiveNoFileComp),
+		Run:               emptyRun,
+	}
+	rootCmd.AddCommand(childCmd)
+
+	output, err := executeCommand(rootCmd, ShellCompNoDescRequestCmd, "child", "a")
+	if err != nil {
+		t.Errorf("Unexpected error: %v", err)
+	}
+
+	expected := strings.Join([]string{
+		"apple",
+		"banana",
+		"orange",
+		":4",
+		"Completion ended with directive: ShellCompDirectiveNoFileComp", ""}, "\n")
+
+	if output != expected {
+		t.Errorf("expected: %q, got: %q", expected, output)
+	}
+}
+
+func TestCompletionForGroupedFlags(t *testing.T) {
+	getCmd := func() *Command {
+		rootCmd := &Command{
+			Use: "root",
+			Run: emptyRun,
+		}
+		childCmd := &Command{
+			Use: "child",
+			ValidArgsFunction: func(cmd *Command, args []string, toComplete string) ([]string, ShellCompDirective) {
+				return []string{"subArg"}, ShellCompDirectiveNoFileComp
+			},
+			Run: emptyRun,
+		}
+		rootCmd.AddCommand(childCmd)
+
+		rootCmd.PersistentFlags().Int("ingroup1", -1, "ingroup1")
+		rootCmd.PersistentFlags().String("ingroup2", "", "ingroup2")
+
+		childCmd.Flags().Bool("ingroup3", false, "ingroup3")
+		childCmd.Flags().Bool("nogroup", false, "nogroup")
+
+		// Add flags to a group
+		childCmd.MarkFlagsRequiredTogether("ingroup1", "ingroup2", "ingroup3")
+
+		return rootCmd
+	}
+
+	// Each test case uses a unique command from the function above.
+	testcases := []struct {
+		desc           string
+		args           []string
+		expectedOutput string
+	}{
+		{
+			desc: "flags in group not suggested without - prefix",
+			args: []string{"child", ""},
+			expectedOutput: strings.Join([]string{
+				"subArg",
+				":4",
+				"Completion ended with directive: ShellCompDirectiveNoFileComp", ""}, "\n"),
+		},
+		{
+			desc: "flags in group suggested with - prefix",
+			args: []string{"child", "-"},
+			expectedOutput: strings.Join([]string{
+				"--ingroup1",
+				"--ingroup2",
+				"--ingroup3",
+				"--nogroup",
+				":4",
+				"Completion ended with directive: ShellCompDirectiveNoFileComp", ""}, "\n"),
+		},
+		{
+			desc: "when flag in group present, other flags in group suggested even without - prefix",
+			args: []string{"child", "--ingroup2", "value", ""},
+			expectedOutput: strings.Join([]string{
+				"--ingroup1",
+				"--ingroup3",
+				"subArg",
+				":4",
+				"Completion ended with directive: ShellCompDirectiveNoFileComp", ""}, "\n"),
+		},
+		{
+			desc: "when all flags in group present, flags not suggested without - prefix",
+			args: []string{"child", "--ingroup1", "8", "--ingroup2", "value2", "--ingroup3", ""},
+			expectedOutput: strings.Join([]string{
+				"subArg",
+				":4",
+				"Completion ended with directive: ShellCompDirectiveNoFileComp", ""}, "\n"),
+		},
+		{
+			desc: "group ignored if some flags not applicable",
+			args: []string{"--ingroup2", "value", ""},
+			expectedOutput: strings.Join([]string{
+				"child",
+				"completion",
+				"help",
+				":4",
+				"Completion ended with directive: ShellCompDirectiveNoFileComp", ""}, "\n"),
+		},
+	}
+
+	for _, tc := range testcases {
+		t.Run(tc.desc, func(t *testing.T) {
+			c := getCmd()
+			args := []string{ShellCompNoDescRequestCmd}
+			args = append(args, tc.args...)
+			output, err := executeCommand(c, args...)
+			switch {
+			case err == nil && output != tc.expectedOutput:
+				t.Errorf("expected: %q, got: %q", tc.expectedOutput, output)
+			case err != nil:
+				t.Errorf("Unexpected error %q", err)
+			}
+		})
+	}
+}
+
+func TestCompletionForMutuallyExclusiveFlags(t *testing.T) {
+	getCmd := func() *Command {
+		rootCmd := &Command{
+			Use: "root",
+			Run: emptyRun,
+		}
+		childCmd := &Command{
+			Use: "child",
+			ValidArgsFunction: func(cmd *Command, args []string, toComplete string) ([]string, ShellCompDirective) {
+				return []string{"subArg"}, ShellCompDirectiveNoFileComp
+			},
+			Run: emptyRun,
+		}
+		rootCmd.AddCommand(childCmd)
+
+		rootCmd.PersistentFlags().IntSlice("ingroup1", []int{1}, "ingroup1")
+		rootCmd.PersistentFlags().String("ingroup2", "", "ingroup2")
+
+		childCmd.Flags().Bool("ingroup3", false, "ingroup3")
+		childCmd.Flags().Bool("nogroup", false, "nogroup")
+
+		// Add flags to a group
+		childCmd.MarkFlagsMutuallyExclusive("ingroup1", "ingroup2", "ingroup3")
+
+		return rootCmd
+	}
+
+	// Each test case uses a unique command from the function above.
+	testcases := []struct {
+		desc           string
+		args           []string
+		expectedOutput string
+	}{
+		{
+			desc: "flags in mutually exclusive group not suggested without the - prefix",
+			args: []string{"child", ""},
+			expectedOutput: strings.Join([]string{
+				"subArg",
+				":4",
+				"Completion ended with directive: ShellCompDirectiveNoFileComp", ""}, "\n"),
+		},
+		{
+			desc: "flags in mutually exclusive group suggested with the - prefix",
+			args: []string{"child", "-"},
+			expectedOutput: strings.Join([]string{
+				"--ingroup1",
+				"--ingroup2",
+				"--ingroup3",
+				"--nogroup",
+				":4",
+				"Completion ended with directive: ShellCompDirectiveNoFileComp", ""}, "\n"),
+		},
+		{
+			desc: "when flag in mutually exclusive group present, other flags in group not suggested even with the - prefix",
+			args: []string{"child", "--ingroup1", "8", "-"},
+			expectedOutput: strings.Join([]string{
+				"--ingroup1", // Should be suggested again since it is a slice
+				"--nogroup",
+				":4",
+				"Completion ended with directive: ShellCompDirectiveNoFileComp", ""}, "\n"),
+		},
+		{
+			desc: "group ignored if some flags not applicable",
+			args: []string{"--ingroup1", "8", "-"},
+			expectedOutput: strings.Join([]string{
+				"--ingroup1",
+				"--ingroup2",
+				":4",
+				"Completion ended with directive: ShellCompDirectiveNoFileComp", ""}, "\n"),
+		},
+	}
+
+	for _, tc := range testcases {
+		t.Run(tc.desc, func(t *testing.T) {
+			c := getCmd()
+			args := []string{ShellCompNoDescRequestCmd}
+			args = append(args, tc.args...)
+			output, err := executeCommand(c, args...)
+			switch {
+			case err == nil && output != tc.expectedOutput:
+				t.Errorf("expected: %q, got: %q", tc.expectedOutput, output)
+			case err != nil:
+				t.Errorf("Unexpected error %q", err)
+			}
+		})
 	}
 }
